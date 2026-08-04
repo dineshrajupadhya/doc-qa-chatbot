@@ -1,0 +1,17 @@
+.git
+.gitignore
+.vscode
+.qodo
+.netlify
+vectorstore/
+uploads/
+*.md
+*.bat
+*.vbs
+vercel.json
+render.yaml
+backend/.env
+__pycache__/
+*.pyc
+.venv/
+venv/
