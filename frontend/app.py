@@ -13,6 +13,12 @@ except ImportError:
     VOICE_AVAILABLE = False
 
 try:
+    from pydub import AudioSegment
+    PYDUB_AVAILABLE = True
+except ImportError:
+    PYDUB_AVAILABLE = False
+
+try:
     from gtts import gTTS
     TTS_AVAILABLE = True
 except ImportError:
@@ -67,6 +73,9 @@ st.markdown("""
 .highlighted { background: #ffeb3b; padding: 1px 3px; border-radius: 2px; font-weight: bold; }
 .source-card { background: #f8f9fa; border: 1px solid #dee2e6; border-radius: 8px; padding: 12px; margin: 8px 0; }
 div[data-testid="stExpander"] p { font-size: 0.9rem; }
+div[data-testid="stAudioInput"] div[role="alert"] { display: none !important; }
+div[data-testid="stAudioInput"] .stError { display: none !important; }
+div[data-testid="stAudioInput"] button[aria-label="Clear"] + div { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -133,10 +142,19 @@ with st.sidebar:
             ai_messages = [m["content"] for m in st.session_state.messages if m["role"] == "assistant"]
             if ai_messages:
                 if st.button("Read Last Answer", use_container_width=True):
-                    tts = gTTS(ai_messages[-1], lang="en")
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
-                        tts.save(f.name)
-                        st.audio(f.name, format="audio/mp3")
+                    tts_tmp = None
+                    try:
+                        tts = gTTS(ai_messages[-1], lang="en")
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
+                            tts_tmp = f.name
+                            tts.save(f.name)
+                        st.audio(tts_tmp, format="audio/mp3")
+                    finally:
+                        if tts_tmp and os.path.exists(tts_tmp):
+                            try:
+                                os.remove(tts_tmp)
+                            except OSError:
+                                pass
 
 # ── TAB: Chat ──────────────────────────────────────────────────
 with tab_chat:
@@ -167,7 +185,7 @@ with tab_chat:
                                     st.subheader("Suggested Questions")
                                     for sq in suggestions:
                                         if st.button(sq, key=f"sug_{sq}", use_container_width=True):
-                                            st.session_state["voice_query"] = sq
+                                            st.session_state["pending_query"] = sq
                                             st.rerun()
                         except Exception:
                             pass
@@ -180,33 +198,59 @@ with tab_chat:
         st.subheader("Voice Input")
         if VOICE_AVAILABLE:
             audio_file = st.audio_input("Record your question", key="voice_recorder")
-            if audio_file:
+            if audio_file and not st.session_state.get("_voice_processed"):
                 with st.spinner("Transcribing..."):
+                    tmp_path = None
                     try:
+                        audio_bytes = audio_file.getvalue()
+
+                        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+                            tmp.write(audio_bytes)
+                            tmp_path = tmp.name
+
+                        if PYDUB_AVAILABLE:
+                            try:
+                                audio_seg = AudioSegment.from_file(tmp_path)
+                                wav_path = tmp_path.replace(".wav", "_converted.wav")
+                                audio_seg.export(wav_path, format="wav")
+                                tmp_path = wav_path
+                            except Exception:
+                                pass
+
                         recognizer = sr.Recognizer()
-                        with sr.AudioFile(audio_file) as source:
+                        with sr.AudioFile(tmp_path) as source:
                             audio_data = recognizer.record(source)
-                        text = recognizer.recognize_google(audio_data)
+
+                        text = recognizer.recognize_google(audio_data, language="en-US")
                         if text.strip():
                             st.success(f"Transcribed: {text}")
-                            st.session_state["voice_query"] = text
+                            st.session_state["pending_query"] = text
+                            st.session_state["_voice_processed"] = True
                     except sr.UnknownValueError:
-                        st.error("Could not understand the audio.")
+                        st.error("Could not understand the audio. Please speak clearly and try again.")
                     except sr.RequestError as e:
-                        st.error(f"Speech service error: {e}")
+                        st.error(f"Speech recognition service unavailable. Check your internet connection. Details: {e}")
                     except Exception as e:
-                        st.error(f"Error: {e}")
+                        st.error(f"Voice input error: {e}")
+                    finally:
+                        if tmp_path and os.path.exists(tmp_path):
+                            try:
+                                os.remove(tmp_path)
+                            except OSError:
+                                pass
+            elif st.session_state.get("_voice_processed"):
+                st.session_state["_voice_processed"] = False
         else:
-            st.info("Voice input requires SpeechRecognition package.")
+            st.info("Voice input requires SpeechRecognition package. Install it with: pip install SpeechRecognition")
 
-    voice_q = st.session_state.pop("voice_query", None)
-    if voice_q:
-        st.session_state.messages.append({"role": "user", "content": voice_q, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
+    pending_q = st.session_state.pop("pending_query", None)
+    if pending_q:
+        st.session_state.messages.append({"role": "user", "content": pending_q, "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})
         with st.chat_message("user"):
-            st.write(voice_q)
+            st.write(pending_q)
             st.caption(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         with st.chat_message("assistant"):
-            answer, sources = stream_answer(voice_q, st.session_state.selected_model)
+            answer, sources = stream_answer(pending_q, st.session_state.selected_model)
             if answer:
                 if sources:
                     with st.expander("Sources"):
@@ -242,7 +286,7 @@ with tab_chat:
                         st.info("Try asking:")
                         for sq in suggestions:
                             if st.button(sq, key=f"chat_sug_{sq}", use_container_width=True):
-                                st.session_state["voice_query"] = sq
+                                st.session_state["pending_query"] = sq
                                 st.rerun()
             except Exception:
                 pass
