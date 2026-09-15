@@ -221,17 +221,26 @@ with tab_chat:
                         with sr.AudioFile(tmp_path) as source:
                             audio_data = recognizer.record(source)
 
-                        text = recognizer.recognize_google(audio_data, language="en-US")
-                        if text.strip():
+                        try:
+                            text = recognizer.recognize_google(audio_data, language="en-US")
+                        except sr.RequestError:
+                            try:
+                                text = recognizer.recognize_google(audio_data, language="en-US", show_all=False)
+                            except Exception:
+                                text = ""
+
+                        if text and text.strip():
                             st.success(f"Transcribed: {text}")
                             st.session_state["pending_query"] = text
                             st.session_state["_voice_processed"] = True
+                        else:
+                            st.warning("Could not transcribe. Try typing your question below.")
                     except sr.UnknownValueError:
-                        st.error("Could not understand the audio. Please speak clearly and try again.")
+                        st.warning("Could not understand the audio. Please speak clearly or type your question below.")
                     except sr.RequestError as e:
-                        st.error(f"Speech recognition service unavailable. Check your internet connection. Details: {e}")
+                        st.warning(f"Speech service unavailable. Please type your question below.")
                     except Exception as e:
-                        st.error(f"Voice input error: {e}")
+                        st.warning(f"Voice input error. Please type your question below.")
                     finally:
                         if tmp_path and os.path.exists(tmp_path):
                             try:
@@ -242,6 +251,12 @@ with tab_chat:
                 st.session_state["_voice_processed"] = False
         else:
             st.info("Voice input requires SpeechRecognition package. Install it with: pip install SpeechRecognition")
+
+        st.caption("Or type your question:")
+        manual_query = st.text_input("Type question here", key="manual_voice_input", label_visibility="collapsed", placeholder="Type your question here...")
+        if manual_query and manual_query.strip():
+            st.session_state["pending_query"] = manual_query.strip()
+            st.rerun()
 
     pending_q = st.session_state.pop("pending_query", None)
     if pending_q:
